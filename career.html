@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Career Mentor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a href="index.html" class="brand"><span class="dot"></span> AI Career Navigator</a>
+  <a href="index.html" class="back">← Dashboard</a>
+</div>
+
+<div class="page">
+
+  <div class="agent-route">Orchestrator <span class="arrow">→</span> Career Mentor Agent</div>
+
+  <div class="tool-card">
+
+    <h1>🤖 Career Mentor Agent</h1>
+
+    <div id="chatBox">
+      <div class="ai">Hello 👋 I'm your AI Career Mentor. Ask me about career guidance, skills, placements, learning roadmaps, or resume improvements.</div>
+    </div>
+
+    <textarea id="message" rows="4" placeholder="Ask your career question..."></textarea>
+    <button onclick="askAI()">Ask AI</button>
+
+  </div>
+
+</div>
+
+<script>
+async function askAI(){
+
+  const input = document.getElementById("message");
+  const message = input.value.trim();
+  const chat = document.getElementById("chatBox");
+
+  if(message === ""){
+    return;
+  }
+
+  chat.innerHTML += `<div class="user">${escapeHtml(message)}</div>`;
+  input.value = "";
+
+  chat.innerHTML += `<div class="ai loading" id="loading"><span class="spinner"></span> Thinking...</div>`;
+  chat.scrollTop = chat.scrollHeight;
+
+  try{
+    const response = await fetch("http://127.0.0.1:5000/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message })
+    });
+
+    const data = await response.json();
+    document.getElementById("loading").remove();
+
+    if(!response.ok){
+      chat.innerHTML += `<div class="ai">❌ ${data.error || "Something went wrong."}</div>`;
+    } else {
+      chat.innerHTML += `<div class="ai">${escapeHtml(data.reply)}</div>`;
+    }
+
+    chat.scrollTop = chat.scrollHeight;
+
+  } catch(error){
+    document.getElementById("loading").innerHTML = "❌ Backend connection failed.";
+  }
+}
+
+function escapeHtml(str){
+  const div = document.createElement("div");
+  div.innerText = str;
+  return div.innerHTML;
+}
+</script>
+
+</body>
+</html>

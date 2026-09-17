@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Job Match Agent</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a href="index.html" class="brand"><span class="dot"></span> AI Career Navigator</a>
+  <a href="index.html" class="back">← Dashboard</a>
+</div>
+
+<div class="page">
+
+  <div class="agent-route">Orchestrator <span class="arrow">→</span> Job Matching Agent</div>
+
+  <div class="tool-card">
+
+    <h1>💼 Job Match Agent</h1>
+    <p>Paste a job description below. Your saved resume will be compared against it.</p>
+
+    <textarea id="job" rows="12" placeholder="Paste job description here..."></textarea>
+    <button id="analyzeJobBtn" onclick="analyzeJob()">Analyze Job</button>
+
+    <div id="output" class="output">Job match report will appear here.</div>
+
+  </div>
+
+</div>
+
+<script>
+const API = "http://127.0.0.1:5000";
+const btn = document.getElementById("analyzeJobBtn");
+const output = document.getElementById("output");
+
+function escapeHtml(str){
+  const div = document.createElement("div");
+  div.innerText = str == null ? "" : str;
+  return div.innerHTML;
+}
+
+function renderMatch(m){
+  if(m.raw_text && !(m.matching_skills && m.matching_skills.length)){
+    return escapeHtml(m.raw_text);
+  }
+
+  const list = (items) => (items && items.length)
+    ? items.map(i => "  • " + i).join("\n")
+    : "  (none)";
+
+  const pct = (m.match_percentage === null || m.match_percentage === undefined)
+    ? "N/A" : m.match_percentage + "%";
+  const ats = (m.ats_compatibility === null || m.ats_compatibility === undefined)
+    ? "N/A" : m.ats_compatibility + "%";
+
+  const text =
+`Match Percentage: ${pct}
+
+Matching Skills:
+${list(m.matching_skills)}
+
+Missing Skills:
+${list(m.missing_skills)}
+
+Experience Comparison:
+  ${m.experience_comparison || "(not available)"}
+
+ATS Compatibility: ${ats}
+
+Improvement Suggestions:
+${list(m.suggestions)}`;
+
+  return escapeHtml(text);
+}
+
+async function analyzeJob(){
+  const jobField = document.getElementById("job");
+  const job_description = jobField.value.trim();
+
+  if(job_description === ""){
+    alert("Please paste a job description.");
+    return;
+  }
+
+  const resume = localStorage.getItem("resume") || "";
+
+  btn.disabled = true;
+  btn.innerText = "Analyzing...";
+  output.innerHTML = `<div class="loading"><span class="spinner"></span> Analyzing resume match...</div>`;
+
+  try{
+    const response = await fetch(`${API}/match`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resume, job_description })
+    });
+
+    const body = await response.json();
+
+    if(!response.ok || body.status === "error" || body.error){
+      const msg = body.error || "Something went wrong.";
+      if(msg.toLowerCase().includes("no resume")){
+        alert("Please upload your resume first.");
+        window.location = "resume.html";
+        return;
+      }
+      output.innerHTML = `❌ ${escapeHtml(msg)}`;
+      return;
+    }
+
+    const match = (body.data && body.data.match) ? body.data.match : body.match;
+    if(!match){
+      output.innerHTML = "❌ No match result returned.";
+      return;
+    }
+
+    output.innerHTML = `<pre style="white-space:pre-wrap; font-family:inherit; margin:0;">${renderMatch(match)}</pre>`;
+
+  } catch(error){
+    output.innerHTML = "❌ Unable to connect to backend. Is the Flask server running?";
+  } finally{
+    btn.disabled = false;
+    btn.innerText = "Analyze Job";
+  }
+}
+</script>
+
+</body>
+</html>

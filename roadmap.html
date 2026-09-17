@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Learning Roadmap</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a href="index.html" class="brand"><span class="dot"></span> AI Career Navigator</a>
+  <a href="index.html" class="back">← Dashboard</a>
+</div>
+
+<div class="page">
+
+  <div class="agent-route">Orchestrator <span class="arrow">→</span> Roadmap Agent</div>
+
+  <div class="tool-card">
+
+    <h1>📚 AI Learning Roadmap</h1>
+    <p>Select your career goal and get a focused 4-week plan.</p>
+
+    <select id="goal">
+      <option>Java Developer</option>
+      <option>Backend Developer</option>
+      <option>Frontend Developer</option>
+      <option>Full Stack Developer</option>
+      <option>Python Developer</option>
+      <option>Data Analyst</option>
+      <option>AI Engineer</option>
+    </select>
+
+    <button onclick="generateRoadmap()">Generate Roadmap</button>
+
+    <div id="roadmap" class="output">Your personalized roadmap will appear here.</div>
+
+  </div>
+
+</div>
+
+<script>
+async function generateRoadmap(){
+
+  const goal = document.getElementById("goal").value;
+  const output = document.getElementById("roadmap");
+
+  output.innerHTML = `<div class="loading"><span class="spinner"></span> Building your roadmap...</div>`;
+
+  try{
+    const response = await fetch("http://127.0.0.1:5000/roadmap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal })
+    });
+
+    const data = await response.json();
+
+    if(!response.ok){
+      output.innerHTML = `❌ ${data.error || "Something went wrong."}`;
+      return;
+    }
+
+    output.innerText = data.roadmap;
+
+  } catch(error){
+    output.innerHTML = "❌ Unable to connect to backend. Is the Flask server running?";
+  }
+}
+</script>
+
+</body>
+</html>

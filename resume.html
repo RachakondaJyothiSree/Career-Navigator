@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Resume Analyzer</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  /* Scoped to the Resume Analyzer output only - reuses existing
+     design tokens (--surface, --border, --accent, etc.) from
+     style.css so it matches the rest of the site exactly. */
+  .analysis-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));
+    gap:14px;
+  }
+  .analysis-card{
+    background:linear-gradient(180deg, var(--surface), var(--surface-2));
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:16px 18px;
+  }
+  .analysis-card-wide{
+    grid-column:1 / -1;
+  }
+  .analysis-card h3{
+    font-family:var(--font-display);
+    font-size:0.95rem;
+    color:var(--accent-2);
+    margin-bottom:8px;
+  }
+  .analysis-card p{
+    color:#dbe3f5;
+    font-size:0.92rem;
+    line-height:1.55;
+    white-space:pre-wrap;
+  }
+  .analysis-card ul{
+    margin:0;
+    padding-left:18px;
+    color:#dbe3f5;
+    font-size:0.9rem;
+    line-height:1.6;
+  }
+  .ats-score-row{
+    display:flex;
+    align-items:center;
+    gap:14px;
+  }
+  .ats-score-value{
+    font-family:var(--font-display);
+    font-size:1.8rem;
+    font-weight:800;
+    min-width:48px;
+  }
+  .ats-score-bar{
+    flex:1;
+    height:8px;
+    border-radius:999px;
+    background:#0e1526;
+    border:1px solid var(--border);
+    overflow:hidden;
+  }
+  .ats-score-fill{
+    height:100%;
+    border-radius:999px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="index.html" class="brand"><span class="dot"></span> AI Career Navigator</a>
+  <a href="index.html" class="back">← Dashboard</a>
+</div>
+
+<div class="page">
+
+  <div class="agent-route">Orchestrator <span class="arrow">→</span> Resume Analyzer Agent</div>
+
+  <div class="tool-card">
+
+    <h1>📄 Resume Analyzer</h1>
+    <p>Upload your resume (PDF or DOCX, under 5MB) to get an AI-powered analysis.</p>
+
+    <input type="file" id="resumeInput" accept=".pdf,.docx">
+
+    <!-- File status card: stays visible permanently once a resume is
+         active for this session - across Analyze, across navigating
+         to other pages and back, and across a full page refresh.
+         It only disappears when the user clicks Remove Resume. -->
+    <div id="fileCard" class="output" style="display:none;"></div>
+
+    <div style="display:flex; gap:12px; margin-top:0;">
+      <button id="analyzeBtn" onclick="analyzeResume()" disabled style="margin-top:16px;">Select a resume to continue</button>
+      <button id="removeBtn" onclick="removeResume()" class="back" style="display:none; width:auto; white-space:nowrap; margin-top:16px; padding:0 20px;">🗑 Remove Resume</button>
+    </div>
+
+    <div id="analysisOutput" class="output">Resume analysis will appear here.</div>
+
+  </div>
+
+</div>
+
+<script>
+const API = "http://127.0.0.1:5000";
+const STORAGE_KEY = "careerNavigator.resumeProfile";
+
+// Single source of truth for the whole page. Every DOM update flows
+// from render(state) - nothing else writes to the DOM directly.
+const state = {
+  phase: "idle",     // idle | uploading | uploaded | analyzing | done | error
+  resumeId: null,
+  filename: null,
+  size: null,
+  wordCount: null,
+  analysisCachedHint: false,
+  jobId: null,
+  analysis: null,
+  resumeText: null,
+  cached: false,
+  errorMsg: null,
+  progressLabel: null,
+};
+
+let pollTimer = null;
+
+const resumeInput = document.getElementById("resumeInput");
+const fileCard = document.getElementById("fileCard");
+const analyzeBtn = document.getElementById("analyzeBtn");
+const removeBtn = document.getElementById("removeBtn");
+const analysisOutput = document.getElementById("analysisOutput");
+
+resumeInput.addEventListener("change", onFileSelected);
+
+function formatBytes(bytes){
+  if(bytes < 1024) return bytes + " B";
+  if(bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function escapeHtml(str){
+  const div = document.createElement("div");
+  div.innerText = str == null ? "" : str;
+  return div.innerHTML;
+}
+
+function renderList(title, items){
+  if(!items || items.length === 0) return "";
+  const lis = items.map(i => `<li>${escapeHtml(i)}</li>`).join("");
+  return `
+    <div class="analysis-card">
+      <h3>${title}</h3>
+      <ul>${lis}</ul>
+    </div>`;
+}
+
+function renderTextCard(title, text){
+  if(!text) return "";
+  return `
+    <div class="analysis-card analysis-card-wide">
+      <h3>${title}</h3>
+      <p>${escapeHtml(text)}</p>
+    </div>`;
+}
+
+function renderAtsCard(score){
+  if(score === null || score === undefined || score === "") return "";
+  const n = Math.max(0, Math.min(100, Number(score) || 0));
+  let tone = "var(--accent-2)";
+  if(n < 50) tone = "#ff6b6b";
+  else if(n < 75) tone = "#ffb84d";
+  return `
+    <div class="analysis-card">
+      <h3>ATS Score</h3>
+      <div class="ats-score-row">
+        <div class="ats-score-value" style="color:${tone};">${n}</div>
+        <div class="ats-score-bar"><div class="ats-score-fill" style="width:${n}%; background:${tone};"></div></div>
+      </div>
+    </div>`;
+}
+
+function renderAnalysis(a){
+  if(a.raw_text && !(a.skills && a.skills.length)){
+    return `<div class="analysis-card analysis-card-wide"><p style="white-space:pre-wrap;">${escapeHtml(a.raw_text)}</p></div>`;
+  }
+  return `<div class="analysis-grid">`
+    + renderTextCard("Resume Summary", a.summary)
+    + renderList("Skills", a.skills)
+    + renderList("Experience", a.experience)
+    + renderList("Education", a.education)
+    + renderList("Strengths", a.strengths)
+    + renderList("Weaknesses", a.weaknesses)
+    + renderAtsCard(a.ats_score)
+    + renderList("Suggestions", a.suggestions)
+    + `</div>`;
+}
+
+// ---------------------------------------------------------------------
+// Persistence: every meaningful state change is mirrored to
+// localStorage immediately, so a refresh / back-navigation / closing
+// and reopening the tab never loses the uploaded resume or its
+// analysis. This is what the old version was missing entirely - it
+// only ever saved the raw resume TEXT (for jobmatch/skillgap), never
+// the filename, resumeId, or analysis result, and nothing on page
+// load ever read it back in.
+// ---------------------------------------------------------------------
+function persist(){
+  if(!state.resumeId){
+    localStorage.removeItem(STORAGE_KEY);
+    return;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    resumeId: state.resumeId,
+    filename: state.filename,
+    size: state.size,
+    wordCount: state.wordCount,
+    analysis: state.analysis,
+    resumeText: state.resumeText,
+    cached: state.cached,
+    phase: (state.phase === "done") ? "done" : "uploaded",
+  }));
+  // Kept for jobmatch.html / skillgap.html, which read this directly.
+  if(state.resumeText){
+    localStorage.setItem("resume", state.resumeText);
+  }
+}
+
+function clearPersisted(){
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem("resume");
+}
+
+// ---------------------------------------------------------------------
+// render(): the ONLY function allowed to touch fileCard / analyzeBtn /
+// analysisOutput. Called after every state change.
+// ---------------------------------------------------------------------
+function render(){
+
+  // --- File card ---
+  if(state.filename){
+    fileCard.style.display = "block";
+    removeBtn.style.display = "inline-block";
+
+    let statusLine;
+    if(state.phase === "uploading"){
+      statusLine = `<div class="loading"><span class="spinner"></span> Uploading & extracting text...</div>`;
+    } else if(state.phase === "error" && !state.resumeId){
+      statusLine = `❌ ${escapeHtml(state.errorMsg || "Upload failed.")}`;
+    } else {
+      statusLine = `✅ Active for this session`;
+      if(state.analysisCachedHint && state.phase !== "done"){
+        statusLine += ` <span style="color:var(--text-dim);">(previously analyzed — will be instant)</span>`;
+      }
+    }
+
+    fileCard.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div style="font-weight:600;">${escapeHtml(state.filename)}</div>
+          <div style="color:var(--text-dim); font-size:0.85rem; margin-top:2px;">
+            ${state.size != null ? formatBytes(state.size) : ""}${state.wordCount ? " · " + state.wordCount + " words" : ""}
+          </div>
+        </div>
+        <div>${statusLine}</div>
+      </div>
+    `;
+  } else {
+    fileCard.style.display = "none";
+    removeBtn.style.display = "none";
+  }
+
+  // --- Analyze button ---
+  resumeInput.disabled = (state.phase === "uploading" || state.phase === "analyzing");
+
+  if(state.phase === "idle"){
+    analyzeBtn.disabled = true;
+    analyzeBtn.innerText = "Select a resume to continue";
+  } else if(state.phase === "uploading"){
+    analyzeBtn.disabled = true;
+    analyzeBtn.innerText = "Uploading...";
+  } else if(state.phase === "uploaded" || state.phase === "error"){
+    analyzeBtn.disabled = !state.resumeId;
+    analyzeBtn.innerText = state.resumeId ? "Analyze Resume" : "Select a resume to continue";
+  } else if(state.phase === "analyzing"){
+    analyzeBtn.disabled = true;
+    analyzeBtn.innerText = "Analyzing...";
+  } else if(state.phase === "done"){
+    analyzeBtn.disabled = false;
+    analyzeBtn.innerText = "Re-analyze";
+  }
+
+  // --- Analysis output ---
+  if(state.phase === "analyzing"){
+    analysisOutput.innerHTML = `<div class="loading"><span class="spinner"></span> ${escapeHtml(state.progressLabel || "Analyzing with AI...")}</div>`;
+  } else if(state.phase === "error" && state.resumeId){
+    analysisOutput.innerHTML = `❌ ${escapeHtml(state.errorMsg || "Analysis failed. Please try again.")}`;
+  } else if(state.phase === "done" && state.analysis){
+    analysisOutput.innerHTML = renderAnalysis(state.analysis);
+  } else if(state.phase === "idle" || state.phase === "uploading" || state.phase === "uploaded"){
+    analysisOutput.innerText = "Resume analysis will appear here.";
+  }
+
+  persist();
+}
+
+// ---------------------------------------------------------------------
+// Step 0: page load - rehydrate from the backend (source of truth for
+// this session) so the uploaded resume + analysis survive navigation
+// and full page refreshes. Falls back to localStorage if the backend
+// can't be reached (e.g. Flask not started yet), so the user still
+// sees their last known state instead of a blank screen.
+// ---------------------------------------------------------------------
+async function rehydrate(){
+  try{
+    const res = await fetch(`${API}/resume/current`);
+    const body = await res.json();
+
+    if(res.ok && body.status === "success" && body.data){
+      const d = body.data;
+      Object.assign(state, {
+        phase: d.analysis ? "done" : "uploaded",
+        resumeId: d.resume_id,
+        filename: d.filename,
+        size: d.size_bytes,
+        wordCount: d.word_count,
+        analysis: d.analysis,
+        resumeText: d.resume_text,
+        cached: d.cached,
+        analysisCachedHint: false,
+      });
+      render();
+      return;
+    }
+
+    // Backend reachable but says "no active resume" - that's the
+    // real current state, so clear any stale local copy instead of
+    // showing a resume the backend no longer knows about.
+    clearPersisted();
+    render();
+
+  } catch(err){
+    // Backend unreachable - fall back to whatever was last saved
+    // locally rather than showing an empty screen.
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if(saved){
+      try{
+        const d = JSON.parse(saved);
+        Object.assign(state, {
+          phase: d.phase || "uploaded",
+          resumeId: d.resumeId,
+          filename: d.filename,
+          size: d.size,
+          wordCount: d.wordCount,
+          analysis: d.analysis,
+          resumeText: d.resumeText,
+          cached: d.cached,
+        });
+      } catch(parseErr){ /* ignore corrupted cache */ }
+    }
+    render();
+  }
+}
+
+// ---------------------------------------------------------------------
+// Step 1: file selected -> upload + extract immediately (fast, no LLM)
+// ---------------------------------------------------------------------
+async function onFileSelected(e){
+  const file = e.target.files[0];
+  if(!file) return;
+
+  if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+
+  Object.assign(state, {
+    phase: "uploading",
+    resumeId: null,
+    filename: file.name,
+    size: file.size,
+    wordCount: null,
+    analysisCachedHint: false,
+    jobId: null,
+    analysis: null,
+    resumeText: null,
+    cached: false,
+    errorMsg: null,
+  });
+  render();
+
+  const formData = new FormData();
+  formData.append("resume", file);
+
+  try{
+    const res = await fetch(`${API}/resume/upload`, { method: "POST", body: formData });
+    const body = await res.json();
+
+    if(!res.ok || body.status === "error"){
+      state.phase = "error";
+      state.errorMsg = body.error || "Upload failed.";
+      render();
+      return;
+    }
+
+    state.phase = "uploaded";
+    state.resumeId = body.data.resume_id;
+    state.wordCount = body.data.word_count;
+    state.analysisCachedHint = body.data.analysis_cached;
+
+    // If this exact resume was analyzed before, surface it instantly -
+    // no need to make the user click Analyze again for zero new info.
+    if(body.data.cached_analysis){
+      state.phase = "done";
+      state.analysis = body.data.cached_analysis;
+      state.cached = true;
+    }
+
+    render();
+
+  } catch(err){
+    state.phase = "error";
+    state.errorMsg = "Could not reach the backend. Is the Flask server running?";
+    render();
+  }
+}
+
+// ---------------------------------------------------------------------
+// Step 2: user clicks Analyze -> kick off analysis, poll until done
+// ---------------------------------------------------------------------
+async function analyzeResume(){
+  if(!state.resumeId) return;
+
+  state.phase = "analyzing";
+  state.progressLabel = "Starting analysis...";
+  state.errorMsg = null;
+  render();
+
+  try{
+    const res = await fetch(`${API}/resume/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resume_id: state.resumeId }),
+    });
+    const body = await res.json();
+
+    if(!res.ok || body.status === "error"){
+      state.phase = "error";
+      state.errorMsg = body.error || "Analysis failed to start.";
+      render();
+      return;
+    }
+
+    // Cache hit - instant result, no polling needed.
+    if(body.status === "success"){
+      finishAnalysis(body.data);
+      return;
+    }
+
+    // Cache miss - poll the job until it completes.
+    state.jobId = body.data.job_id;
+    pollTimer = setInterval(pollJob, 900);
+
+  } catch(err){
+    state.phase = "error";
+    state.errorMsg = "Could not reach the backend. Is the Flask server running?";
+    render();
+  }
+}
+
+async function pollJob(){
+  if(!state.jobId) return;
+
+  try{
+    const res = await fetch(`${API}/resume/analyze/status/${state.jobId}`);
+    const body = await res.json();
+
+    if(!res.ok || body.status === "error"){
+      clearInterval(pollTimer); pollTimer = null;
+      state.phase = "error";
+      state.errorMsg = body.error || "Analysis failed.";
+      render();
+      return;
+    }
+
+    if(body.status === "processing"){
+      state.progressLabel = body.progress === "analyzing"
+        ? "Analyzing with AI..."
+        : "Queued...";
+      render();
+      return;
+    }
+
+    if(body.status === "success"){
+      clearInterval(pollTimer); pollTimer = null;
+      finishAnalysis(body.data);
+    }
+
+  } catch(err){
+    clearInterval(pollTimer); pollTimer = null;
+    state.phase = "error";
+    state.errorMsg = "Lost connection while analyzing. Please try again.";
+    render();
+  }
+}
+
+function finishAnalysis(data){
+  state.phase = "done";
+  state.analysis = data.analysis;
+  state.resumeText = data.resume_text;
+  state.cached = data.cached;
+  render();
+}
+
+// ---------------------------------------------------------------------
+// Remove Resume - the only thing that's allowed to clear state. Tells
+// the backend to forget the active resume (so /chat, /match,
+// /skill-gap stop auto-reusing it), then resets the page to idle.
+// ---------------------------------------------------------------------
+async function removeResume(){
+  removeBtn.disabled = true;
+  removeBtn.innerText = "Removing...";
+
+  try{
+    await fetch(`${API}/resume/current`, { method: "DELETE" });
+  } catch(err){
+    // Even if the backend call fails (server down), still clear the
+    // local view - the user explicitly asked to remove it.
+  }
+
+  clearPersisted();
+
+  Object.assign(state, {
+    phase: "idle",
+    resumeId: null,
+    filename: null,
+    size: null,
+    wordCount: null,
+    analysisCachedHint: false,
+    jobId: null,
+    analysis: null,
+    resumeText: null,
+    cached: false,
+    errorMsg: null,
+    progressLabel: null,
+  });
+
+  resumeInput.value = "";
+  removeBtn.disabled = false;
+  removeBtn.innerText = "🗑 Remove Resume";
+  render();
+}
+
+rehydrate();
+</script>
+
+</body>
+</html>

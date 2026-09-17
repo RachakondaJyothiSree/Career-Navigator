@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skill Gap Analyzer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a href="index.html" class="brand"><span class="dot"></span> AI Career Navigator</a>
+  <a href="index.html" class="back">← Dashboard</a>
+</div>
+
+<div class="page">
+
+  <div class="agent-route">Orchestrator <span class="arrow">→</span> Skill Gap Agent</div>
+
+  <div class="tool-card">
+
+    <h1>📊 Skill Gap Analyzer</h1>
+    <p>Paste a job description to see exactly what's missing from your saved resume.</p>
+
+    <textarea id="job" rows="12" placeholder="Paste job description here..."></textarea>
+    <button onclick="analyzeSkillGap()">Analyze Skill Gap</button>
+
+    <div id="output" class="output">Result will appear here.</div>
+
+  </div>
+
+</div>
+
+<script>
+async function analyzeSkillGap(){
+
+  const resume = localStorage.getItem("resume");
+  const output = document.getElementById("output");
+
+  if(!resume){
+    alert("Please upload your resume first.");
+    window.location = "resume.html";
+    return;
+  }
+
+  const job = document.getElementById("job").value;
+  if(job.trim() === ""){
+    alert("Please paste a job description.");
+    return;
+  }
+
+  output.innerHTML = `<div class="loading"><span class="spinner"></span> Comparing your skills...</div>`;
+
+  try{
+    const response = await fetch("http://127.0.0.1:5000/skill-gap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resume, job })
+    });
+
+    const data = await response.json();
+
+    if(!response.ok){
+      output.innerHTML = `❌ ${data.error || "Something went wrong."}`;
+      return;
+    }
+
+    output.innerText = data.result;
+
+  } catch(error){
+    output.innerHTML = "❌ Unable to connect to backend. Is the Flask server running?";
+  }
+}
+</script>
+
+</body>
+</html>
